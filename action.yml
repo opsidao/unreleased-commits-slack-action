@@ -1,0 +1,86 @@
+name: 'Unreleased Commits Notifier'
+description: 'Checks for unreleased commits, logs them, and optionally posts a list to a Slack channel.'
+author: 'Your GitHub Username'
+
+inputs:
+  slack-bot-token:
+    description: 'The Slack Bot Token for authentication (xoxb-...). Optional.'
+    required: false
+  slack-channel-id:
+    description: 'The ID of the Slack channel to post the notification to (e.g., C12345678). Optional.'
+    required: false
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Check if HEAD commit is tagged
+      id: check_if_tagged
+      shell: bash
+      run: git describe --tags --exact-match HEAD
+      continue-on-error: true
+
+    - name: Log status if no unreleased commits are found ✅
+      if: steps.check_if_tagged.outcome == 'success'
+      shell: bash
+      run: echo "HEAD is tagged. No unreleased commits found."
+
+    - name: Get the last tag on the branch
+      if: steps.check_if_tagged.outcome == 'failure'
+      id: get_last_tag
+      shell: bash
+      run: |
+        LAST_TAG=$(git describe --tags --abbrev=0)
+        echo "Last tag found: $LAST_TAG"
+        echo "LAST_TAG=$LAST_TAG" >> $GITHUB_ENV
+
+    - name: Generate list of unreleased commits
+      if: steps.check_if_tagged.outcome == 'failure'
+      id: get_commits
+      shell: bash
+      run: |
+        COMMIT_LIST=$(git log ${{ env.LAST_TAG }}..HEAD --pretty=format:'• %h %s')
+        
+        EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+        echo "COMMIT_LIST<<$EOF" >> $GITHUB_ENV
+        echo "$COMMIT_LIST" >> $GITHUB_ENV
+        echo "$EOF" >> $GITHUB_ENV
+
+    - name: Log unreleased commits to console 📢
+      if: steps.check_if_tagged.outcome == 'failure'
+      shell: bash
+      run: |
+        echo "The following commits have not been released:"
+        echo "${{ env.COMMIT_LIST }}"
+    
+    - name: Show warning if Slack credentials are not provided ⚠️
+      if: steps.check_if_tagged.outcome == 'failure' && (inputs.slack-bot-token == '' || inputs.slack-channel-id == '')
+      shell: bash
+      run: echo "::warning::Slack credentials not provided. Skipping Slack notification."
+
+    - name: Post notification to Slack
+      if: steps.check_if_tagged.outcome == 'failure' && inputs.slack-bot-token != '' && inputs.slack-channel-id != ''
+      uses: slackapi/slack-github-action@v1.26.0
+      with:
+        channel-id: '${{ inputs.slack-channel-id }}'
+        payload: |
+          {
+            "text": "🚨 The following commits have not been released:",
+            "blocks": [
+              {
+                "type": "section",
+                "text": { "type": "mrkdwn", "text": "🚨 *Unreleased Commits Detected*" }
+              },
+              { "type": "divider" },
+              {
+                "type": "section",
+                "text": { "type": "mrkdwn", "text": "${{ env.COMMIT_LIST }}" }
+              }
+            ]
+          }
+      env:
+        SLACK_BOT_TOKEN: '${{ inputs.slack-bot-token }}'
